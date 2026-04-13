@@ -628,6 +628,107 @@ fn cmd_tci_verify(rounds: usize, save_path: &str) {
     println!("VERIFY RESULT: {}", if verify_ok { "PASS" } else { "FAIL" });
 }
 
+fn cmd_tci_evolve(rounds: usize, evolution_rounds: usize, save_path: &str) {
+    use qlang_runtime::evolution::tci_daemon::TciEvolutionDaemon;
+    use qlang_runtime::ternary_brain::TernaryBrain;
+
+    println!("QLANG TCI-Evolve — Population-Based Continual Learning\n");
+    println!("TCI tasks learn from consensus baseline.");
+    println!("Specialists evolve on each task, merging best solutions back.\n");
+
+    let image_dim = 784usize;
+    let data = MnistData::synthetic(2600, 400);
+
+    let template = TernaryBrain::init(
+        &data.train_images,
+        &data.train_labels,
+        image_dim,
+        1200,
+        10,
+        12,
+    );
+
+    let daemon = TciEvolutionDaemon::with_template(template);
+
+    let n = 800usize;
+    let tasks = [
+        ("normal", data.train_images[..n * image_dim].to_vec(), data.train_labels[..n].to_vec()),
+        ("inverted", {
+            data.train_images[..n * image_dim].iter().map(|&x| 1.0 - x).collect::<Vec<f32>>()
+        }, data.train_labels[..n].to_vec()),
+    ];
+
+    let mut task_summaries = Vec::new();
+    for (task_name, images, labels) in &tasks {
+        print!("Learning + evolving task '{}': ", task_name);
+        let t0 = std::time::Instant::now();
+        match daemon.learn_task_with_evolution(
+            task_name,
+            images,
+            labels,
+            n,
+            rounds,
+            evolution_rounds,
+        ) {
+            Ok(pool) => {
+                let best = pool.fitness_scores.iter().copied().max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)).unwrap_or(0.0);
+                let avg = pool.fitness_scores.iter().sum::<f32>() / pool.fitness_scores.len().max(1) as f32;
+                println!("done in {:.1}s | specialists={} gen={} best={:.1}% avg={:.1}%",
+                    t0.elapsed().as_secs_f32(), pool.specialists.len(), pool.generation,
+                    best * 100.0, avg * 100.0);
+                task_summaries.push((task_name.to_string(), best, avg, pool.generation));
+            }
+            Err(e) => {
+                println!("FAIL: {}", e);
+            }
+        }
+    }
+
+    // Status summary
+    let status = daemon.status();
+    println!("\nEvolution Summary:");
+    println!("  Tasks learned:      {}", status.total_tasks);
+    println!("  Total specialists:  {}", status.total_specialists);
+    println!("  Total generations:  {}", status.total_generations);
+    println!();
+    for ts in &task_summaries {
+        println!("  Task '{}': gen={} best={:.1}% avg={:.1}%", ts.0, ts.3, ts.1 * 100.0, ts.2 * 100.0);
+    }
+
+    // Test routing
+    if let Some(sample) = data.train_images.get(0..image_dim) {
+        match daemon.route_sample(sample) {
+            Ok(r) => println!("\nRouting test: task='{}' sim={:.3} conf={:.3} fallback={}", r.task_name, r.similarity, r.confidence, r.used_consensus_fallback),
+            Err(e) => println!("\nRouting test FAIL: {}", e),
+        }
+    }
+
+    // Save state
+    let mut saved = false;
+    if let Err(e) = daemon.save(save_path) {
+        println!("Save failed: {}", e);
+    } else {
+        saved = true;
+        println!("State saved to: {}", save_path);
+    }
+
+    // Reload and verify
+    let reload_ok = match TciEvolutionDaemon::load(save_path) {
+        Ok(reloaded) => {
+            let rsts = reloaded.status();
+            rsts.total_tasks == status.total_tasks
+        }
+        Err(e) => {
+            println!("Reload failed: {}", e);
+            false
+        }
+    };
+
+    let all_passed = task_summaries.iter().all(|(_, best, _, _)| *best > 0.5);
+    let verify_ok = all_passed && saved && reload_ok;
+    println!("\nEVOLVE VERIFY: {}", if verify_ok { "PASS" } else { "FAIL" });
+}
+
 // ============================================================
 // Main
 // ============================================================
@@ -671,6 +772,12 @@ fn main() {
             let output = arg_value(&args, "--output").unwrap_or_else(|| "tci_state.qltc".into());
             cmd_tci_verify(rounds, &output);
         }
+        "tci-evolve" => {
+            let rounds: usize = arg_value(&args, "--rounds").and_then(|s| s.parse().ok()).unwrap_or(5);
+            let evo_rounds: usize = arg_value(&args, "--evo-rounds").and_then(|s| s.parse().ok()).unwrap_or(3);
+            let output = arg_value(&args, "--output").unwrap_or_else(|| "tci_evolve_state.qltc".into());
+            cmd_tci_evolve(rounds, evo_rounds, &output);
+        }
         "help" | "--help" | "-h" => print_usage(),
         other => {
             eprintln!("Unknown command: {}", other);
@@ -692,6 +799,7 @@ fn print_usage() {
     println!("  qlang bench  <model.qlbg>");
     println!("  qlang tci    --rounds <n>");
     println!("  qlang tci-verify --rounds <n> --output <state.qltc>");
+    println!("  qlang tci-evolve --rounds <n> --evo-rounds <e> --output <state.qltc>");
     println!();
     println!("EXAMPLES:");
     println!("  qlang train --data data/mnist --epochs 15 --output digit.qlbg");
@@ -700,6 +808,7 @@ fn print_usage() {
     println!("  qlang bench digit.qlbg");
     println!("  qlang tci --rounds 5");
     println!("  qlang tci-verify --rounds 5 --output tci_state.qltc");
+    println!("  qlang tci-evolve --rounds 5 --evo-rounds 3 --output tci_evolve.qltc");
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {

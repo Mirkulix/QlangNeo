@@ -33,7 +33,7 @@ use rayon::prelude::*;
 // ============================================================
 
 /// A single competitive ternary neuron.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 struct TernaryNeuron {
     /// Ternary weights {-1, 0, +1} as i8
     weights: Vec<i8>,
@@ -93,7 +93,7 @@ impl TernaryNeuron {
 // ============================================================
 
 /// A layer of competing ternary neurons (Winner-Take-All).
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct CompetitiveLayer {
     neurons: Vec<TernaryNeuron>,
     in_dim: usize,
@@ -286,7 +286,7 @@ impl CompetitiveLayer {
 // Full Ternary Brain Network
 // ============================================================
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TernaryBrain {
     pub layer: CompetitiveLayer,
     pub n_classes: usize,

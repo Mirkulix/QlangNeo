@@ -11,7 +11,7 @@
 use crate::hdc::HdVector;
 use crate::ternary_brain::TernaryBrain;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TaskSnapshot {
     pub name: String,
     pub weights: Vec<i8>,
@@ -29,11 +29,11 @@ pub struct RouteOutcome {
     pub used_consensus_fallback: bool,
 }
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct TciEngine {
-    template: TernaryBrain,
-    tasks: Vec<TaskSnapshot>,
-    consensus: Vec<i8>,
+    pub template: TernaryBrain,
+    pub tasks: Vec<TaskSnapshot>,
+    pub consensus: Vec<i8>,
 }
 
 impl TciEngine {

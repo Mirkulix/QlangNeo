@@ -9,7 +9,7 @@
 //! This is how brains might encode concepts — distributed, high-dimensional, robust.
 
 /// A hyperdimensional ternary vector.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct HdVector {
     /// Ternary components {-1, 0, +1} stored as i8
     pub data: Vec<i8>,
