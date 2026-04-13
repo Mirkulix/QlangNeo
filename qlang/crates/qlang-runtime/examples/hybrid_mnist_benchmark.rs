@@ -55,10 +55,10 @@ fn parse_profile() -> BenchConfig {
     match profile {
         BenchProfile::Fast => BenchConfig {
             profile,
-            timesteps: 15,
-            n_train_samples: 240,
-            n_test_samples: 80,
-            epochs: 12,
+            timesteps: 5,
+            n_train_samples: 120,
+            n_test_samples: 40,
+            epochs: 8,
             eval_every: 2,
             use_feature_cache,
         },
@@ -144,29 +144,9 @@ fn main() {
     println!("Starting training ({} epochs)...", epochs);
     println!("────────────────────────────────────────────────────────────────");
 
-    let spike_dim = *snn_layers.last().unwrap();
-    let maybe_train_cache = if cfg.use_feature_cache {
-        println!("Precomputing train spike features...");
-        Some(extract_spike_features(
-            &mut classifier,
-            &train_inputs,
-            n_train_samples,
-            snn_layers[0],
-        ))
-    } else {
-        None
-    };
-    let maybe_test_cache = if cfg.use_feature_cache {
-        println!("Precomputing test spike features...");
-        Some(extract_spike_features(
-            &mut classifier,
-            &test_inputs,
-            n_test_samples,
-            snn_layers[0],
-        ))
-    } else {
-        None
-    };
+    if cfg.use_feature_cache {
+        println!("Note: static feature cache is disabled in hybrid mode (SNN updates every step).");
+    }
 
     let train_start = Instant::now();
     let mut epoch_stats = Vec::new();
@@ -177,33 +157,13 @@ fn main() {
         let mut num_samples = 0usize;
 
         // Training pass
-        if let Some(train_cache) = &maybe_train_cache {
-            for sample in 0..n_train_samples {
-                let spikes = &train_cache[sample * spike_dim..(sample + 1) * spike_dim];
-                let target = train_labels[sample] as usize;
+        for sample in 0..n_train_samples {
+            let input = &train_inputs[sample * snn_layers[0]..(sample + 1) * snn_layers[0]];
+            let target = train_labels[sample];
 
-                let (logits, hidden) = classifier.readout.forward(spikes);
-                let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                let exp_logits: Vec<f32> = logits.iter().map(|l| (l - max_logit).exp()).collect();
-                let sum_exp: f32 = exp_logits.iter().sum();
-                let prob_t = (exp_logits[target] / sum_exp).max(1e-8);
-                let loss = -prob_t.ln();
-                let d_output = classifier.readout.loss_gradient(&logits, target);
-                classifier
-                    .readout
-                    .backward_and_update(spikes, &hidden, &d_output, lr_mlp);
-                total_loss += loss;
-                num_samples += 1;
-            }
-        } else {
-            for sample in 0..n_train_samples {
-                let input = &train_inputs[sample * snn_layers[0]..(sample + 1) * snn_layers[0]];
-                let target = train_labels[sample];
-
-                let loss = classifier.train_step(input, target, lr_mlp, lr_snn);
-                total_loss += loss;
-                num_samples += 1;
-            }
+            let loss = classifier.train_step(input, target, lr_mlp, lr_snn);
+            total_loss += loss;
+            num_samples += 1;
         }
 
         let avg_loss = total_loss / num_samples as f32;
@@ -211,20 +171,10 @@ fn main() {
 
         // Evaluation
         if epoch % cfg.eval_every == 0 || epoch == epochs - 1 {
-            let train_acc = if let Some(train_cache) = &maybe_train_cache {
-                classifier
-                    .readout
-                    .accuracy(train_cache, &train_labels, n_train_samples, spike_dim)
-            } else {
-                classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
-            };
-            let test_acc = if let Some(test_cache) = &maybe_test_cache {
-                classifier
-                    .readout
-                    .accuracy(test_cache, &test_labels, n_test_samples, spike_dim)
-            } else {
-                classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
-            };
+            let train_acc =
+                classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0]);
+            let test_acc =
+                classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0]);
 
             println!(
                 " Epoch {:3} | Loss: {:6.4} | Train Acc: {:5.1}% | Test Acc: {:5.1}% | {:6.2}s",
@@ -253,20 +203,10 @@ fn main() {
     // Final Evaluation
     // =========================================================================
     println!("Final Evaluation:");
-    let final_train_acc = if let Some(train_cache) = &maybe_train_cache {
-        classifier
-            .readout
-            .accuracy(train_cache, &train_labels, n_train_samples, spike_dim)
-    } else {
-        classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
-    };
-    let final_test_acc = if let Some(test_cache) = &maybe_test_cache {
-        classifier
-            .readout
-            .accuracy(test_cache, &test_labels, n_test_samples, spike_dim)
-    } else {
-        classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
-    };
+    let final_train_acc =
+        classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0]);
+    let final_test_acc =
+        classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0]);
 
     println!("  Train Accuracy: {:.1}%", final_train_acc * 100.0);
     println!("  Test Accuracy:  {:.1}%", final_test_acc * 100.0);
@@ -328,24 +268,3 @@ fn format_vec(v: &[usize]) -> String {
         .join(" → ")
 }
 
-fn extract_spike_features(
-    classifier: &mut HybridSpikingClassifier,
-    inputs: &[f32],
-    n_samples: usize,
-    input_dim: usize,
-) -> Vec<f32> {
-    let spike_dim = classifier.readout.n_input;
-    let mut out = Vec::with_capacity(n_samples * spike_dim);
-
-    for s in 0..n_samples {
-        let sample = &inputs[s * input_dim..(s + 1) * input_dim];
-        let spike_counts = classifier.snn.run(sample, classifier.timesteps);
-        out.extend(
-            spike_counts
-                .iter()
-                .map(|&c| (c as f32) / (classifier.timesteps as f32).max(1.0)),
-        );
-    }
-
-    out
-}
