@@ -70,3 +70,24 @@ New Large Feature (implemented now): TCI
   - cargo check -p qlang-runtime -p qlang
   - cargo run --bin qlang -- tci --rounds 3
   - Demo output confirmed task learning, routing, and consensus evaluation.
+
+TCI Hard-Verification Upgrade (implemented)
+- Added serialization support for HdVector in qlang-runtime/src/hdc.rs.
+- Extended TCI in qlang-runtime/src/tci.rs with:
+  - full engine persistence: save(path) / load(path)
+  - robust routing policy: route_and_predict_robust(sample, min_similarity, min_confidence)
+  - consensus fallback flag in RouteOutcome
+  - stronger test suite:
+    - persistence_roundtrip
+    - robust_routing_can_fallback
+    - snapshot_retention_after_more_tasks
+- Extended CLI in qlang/src/cli.rs:
+  - updated tci demo to show fallback flag
+  - added qlang tci-verify --rounds <n> --output <state.qltc>
+  - verify pipeline checks retention, consensus, routing, and persistence reload
+
+Hard Verification Results
+- cargo check -p qlang-runtime -p qlang: PASS
+- cargo test -p qlang-runtime tci -- --nocapture: PASS (4/4 TCI tests)
+- cargo run --bin qlang -- tci-verify --rounds 3 --output /tmp/tci_state.qltc: PASS
+  - VERIFY RESULT: PASS

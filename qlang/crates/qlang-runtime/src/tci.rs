@@ -11,7 +11,7 @@
 use crate::hdc::HdVector;
 use crate::ternary_brain::TernaryBrain;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct TaskSnapshot {
     pub name: String,
     pub weights: Vec<i8>,
@@ -19,15 +19,17 @@ pub struct TaskSnapshot {
     pub train_accuracy: f32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RouteOutcome {
     pub task_index: usize,
     pub task_name: String,
     pub similarity: f32,
     pub prediction: u8,
     pub confidence: f32,
+    pub used_consensus_fallback: bool,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TciEngine {
     template: TernaryBrain,
     tasks: Vec<TaskSnapshot>,
@@ -55,6 +57,18 @@ impl TciEngine {
 
     pub fn consensus_weights(&self) -> &[i8] {
         &self.consensus
+    }
+
+    /// Persist full TCI state for cross-session continuation.
+    pub fn save(&self, path: &str) -> Result<(), String> {
+        let bytes = bincode::serialize(self).map_err(|e| format!("tci serialize: {e}"))?;
+        std::fs::write(path, &bytes).map_err(|e| format!("tci write: {e}"))
+    }
+
+    /// Load full TCI state (template + snapshots + consensus).
+    pub fn load(path: &str) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("tci read: {e}"))?;
+        bincode::deserialize(&bytes).map_err(|e| format!("tci deserialize: {e}"))
     }
 
     /// Learn one task and store it as a snapshot.
@@ -94,6 +108,19 @@ impl TciEngine {
 
     /// Route one sample to the most similar task snapshot and predict.
     pub fn route_and_predict(&self, sample: &[f32]) -> Result<RouteOutcome, String> {
+        self.route_and_predict_robust(sample, -1.0, 0.0)
+    }
+
+    /// Route with safety thresholds.
+    ///
+    /// Falls back to consensus when route similarity or classifier confidence
+    /// are below thresholds.
+    pub fn route_and_predict_robust(
+        &self,
+        sample: &[f32],
+        min_similarity: f32,
+        min_confidence: f32,
+    ) -> Result<RouteOutcome, String> {
         if self.tasks.is_empty() {
             return Err("route_and_predict: no tasks learned".into());
         }
@@ -118,7 +145,32 @@ impl TciEngine {
         }
 
         let task = &self.tasks[best_i];
-        let brain = TernaryBrain::from_template_and_weights(&self.template, &task.weights)?;
+        let (prediction, confidence) = self.predict_with_weights(sample, &task.weights)?;
+
+        if best_s < min_similarity || confidence < min_confidence {
+            let (cons_pred, cons_conf) = self.predict_with_weights(sample, &self.consensus)?;
+            return Ok(RouteOutcome {
+                task_index: usize::MAX,
+                task_name: "consensus".to_string(),
+                similarity: best_s,
+                prediction: cons_pred,
+                confidence: cons_conf,
+                used_consensus_fallback: true,
+            });
+        }
+
+        Ok(RouteOutcome {
+            task_index: best_i,
+            task_name: task.name.clone(),
+            similarity: best_s,
+            prediction,
+            confidence,
+            used_consensus_fallback: false,
+        })
+    }
+
+    fn predict_with_weights(&self, sample: &[f32], weights: &[i8]) -> Result<(u8, f32), String> {
+        let brain = TernaryBrain::from_template_and_weights(&self.template, weights)?;
 
         let class_scores = brain.layer.predict_one(sample, brain.n_classes);
         let mut best_cls = 0usize;
@@ -137,14 +189,7 @@ impl TciEngine {
 
         let margin = (best_score - second_score).max(0) as f32;
         let confidence = margin / (best_score.abs().max(1) as f32);
-
-        Ok(RouteOutcome {
-            task_index: best_i,
-            task_name: task.name.clone(),
-            similarity: best_s,
-            prediction: best_cls as u8,
-            confidence,
-        })
+        Ok((best_cls as u8, confidence))
     }
 
     /// Evaluate one stored task snapshot on any dataset.
@@ -272,5 +317,129 @@ mod tests {
         let sample = &data.test_images[..image_dim];
         let routed = engine.route_and_predict(sample).unwrap();
         assert!(routed.task_index < 2);
+        assert!(!routed.used_consensus_fallback);
+    }
+
+    #[test]
+    fn persistence_roundtrip() {
+        let data = MnistData::synthetic(800, 100);
+        let image_dim = 784;
+
+        let template = TernaryBrain::init(
+            &data.train_images,
+            &data.train_labels,
+            image_dim,
+            500,
+            10,
+            6,
+        );
+
+        let mut engine = TciEngine::new(template);
+        let _ = engine
+            .learn_task(
+                "task-a",
+                &data.train_images[..400 * image_dim],
+                &data.train_labels[..400],
+                400,
+                2,
+            )
+            .unwrap();
+
+        let path = "/tmp/tci_roundtrip.qltc";
+        engine.save(path).unwrap();
+        let loaded = TciEngine::load(path).unwrap();
+
+        assert_eq!(loaded.task_count(), 1);
+        assert_eq!(loaded.task_names()[0], "task-a");
+        assert_eq!(loaded.consensus_weights().len(), engine.consensus_weights().len());
+    }
+
+    #[test]
+    fn robust_routing_can_fallback() {
+        let data = MnistData::synthetic(1000, 100);
+        let image_dim = 784;
+
+        let template = TernaryBrain::init(
+            &data.train_images,
+            &data.train_labels,
+            image_dim,
+            600,
+            10,
+            6,
+        );
+
+        let mut engine = TciEngine::new(template);
+        let _ = engine
+            .learn_task(
+                "task-a",
+                &data.train_images[..500 * image_dim],
+                &data.train_labels[..500],
+                500,
+                2,
+            )
+            .unwrap();
+
+        let noisy = vec![0.5f32; image_dim];
+        let routed = engine
+            .route_and_predict_robust(&noisy, 0.95, 0.95)
+            .unwrap();
+        assert!(routed.used_consensus_fallback);
+        assert_eq!(routed.task_name, "consensus");
+    }
+
+    #[test]
+    fn snapshot_retention_after_more_tasks() {
+        let data = MnistData::synthetic(1600, 200);
+        let image_dim = 784;
+
+        let template = TernaryBrain::init(
+            &data.train_images,
+            &data.train_labels,
+            image_dim,
+            900,
+            10,
+            8,
+        );
+
+        let mut engine = TciEngine::new(template);
+
+        let n = 500usize;
+        let _ = engine
+            .learn_task(
+                "normal",
+                &data.train_images[..n * image_dim],
+                &data.train_labels[..n],
+                n,
+                3,
+            )
+            .unwrap();
+
+        let eval_n = 150usize;
+        let before = engine
+            .evaluate_task(0, &data.test_images[..eval_n * image_dim], &data.test_labels[..eval_n], eval_n)
+            .unwrap();
+
+        let mut inv = data.train_images[n * image_dim..2 * n * image_dim].to_vec();
+        for v in &mut inv {
+            *v = 1.0 - *v;
+        }
+        let _ = engine
+            .learn_task("inverted", &inv, &data.train_labels[n..2 * n], n, 3)
+            .unwrap();
+
+        let mut contrast = data.train_images[2 * n * image_dim..3 * n * image_dim].to_vec();
+        for v in &mut contrast {
+            *v = (*v * 1.4).clamp(0.0, 1.0);
+        }
+        let _ = engine
+            .learn_task("contrast", &contrast, &data.train_labels[2 * n..3 * n], n, 3)
+            .unwrap();
+
+        let after = engine
+            .evaluate_task(0, &data.test_images[..eval_n * image_dim], &data.test_labels[..eval_n], eval_n)
+            .unwrap();
+
+        // Snapshot retention should hold strongly despite learning new tasks.
+        assert!((before - after).abs() <= 0.02);
     }
 }

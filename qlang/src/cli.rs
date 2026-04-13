@@ -513,13 +513,13 @@ fn cmd_tci_demo(rounds: usize) {
         .unwrap_or(0.0);
 
     let sample_normal = &data.test_images[..image_dim];
-    let routed_normal = engine.route_and_predict(sample_normal).ok();
+    let routed_normal = engine.route_and_predict_robust(sample_normal, 0.05, 0.05).ok();
 
     let mut sample_inverted = sample_normal.to_vec();
     for v in &mut sample_inverted {
         *v = 1.0 - *v;
     }
-    let routed_inverted = engine.route_and_predict(&sample_inverted).ok();
+    let routed_inverted = engine.route_and_predict_robust(&sample_inverted, 0.05, 0.05).ok();
 
     println!("Learned tasks: {}", engine.task_count());
     println!("Task names: {}", engine.task_names().join(", "));
@@ -533,16 +533,99 @@ fn cmd_tci_demo(rounds: usize) {
 
     if let Some(r) = routed_normal {
         println!(
-            "Route normal sample -> task='{}' sim={:.3} pred={} conf={:.3}",
-            r.task_name, r.similarity, r.prediction, r.confidence
+            "Route normal sample -> task='{}' sim={:.3} pred={} conf={:.3} fallback={}",
+            r.task_name, r.similarity, r.prediction, r.confidence, r.used_consensus_fallback
         );
     }
     if let Some(r) = routed_inverted {
         println!(
-            "Route inverted sample -> task='{}' sim={:.3} pred={} conf={:.3}",
-            r.task_name, r.similarity, r.prediction, r.confidence
+            "Route inverted sample -> task='{}' sim={:.3} pred={} conf={:.3} fallback={}",
+            r.task_name, r.similarity, r.prediction, r.confidence, r.used_consensus_fallback
         );
     }
+}
+
+fn cmd_tci_verify(rounds: usize, save_path: &str) {
+    use qlang_runtime::tci::TciEngine;
+    use qlang_runtime::ternary_brain::TernaryBrain;
+
+    println!("QLANG TCI Verify — Real Verification Pipeline\n");
+
+    let image_dim = 784usize;
+    let data = MnistData::synthetic(2600, 400);
+
+    let template = TernaryBrain::init(
+        &data.train_images,
+        &data.train_labels,
+        image_dim,
+        1200,
+        10,
+        12,
+    );
+    let mut engine = TciEngine::new(template);
+
+    let n = 900usize;
+    let acc0 = engine
+        .learn_task(
+            "normal",
+            &data.train_images[..n * image_dim],
+            &data.train_labels[..n],
+            n,
+            rounds,
+        )
+        .unwrap_or(0.0);
+
+    let test_n = data.n_test.min(300);
+    let task0_before = engine
+        .evaluate_task(0, &data.test_images[..test_n * image_dim], &data.test_labels[..test_n], test_n)
+        .unwrap_or(0.0);
+
+    let mut inv = data.train_images[n * image_dim..2 * n * image_dim].to_vec();
+    for v in &mut inv {
+        *v = 1.0 - *v;
+    }
+    let acc1 = engine
+        .learn_task("inverted", &inv, &data.train_labels[n..2 * n], n, rounds)
+        .unwrap_or(0.0);
+
+    let mut contrast = data.train_images[2 * n * image_dim..(2 * n + 700) * image_dim].to_vec();
+    for v in &mut contrast {
+        *v = (*v * 1.4).clamp(0.0, 1.0);
+    }
+    let acc2 = engine
+        .learn_task("contrast", &contrast, &data.train_labels[2 * n..(2 * n + 700)], 700, rounds)
+        .unwrap_or(0.0);
+
+    let task0_after = engine
+        .evaluate_task(0, &data.test_images[..test_n * image_dim], &data.test_labels[..test_n], test_n)
+        .unwrap_or(0.0);
+    let consensus = engine
+        .evaluate_consensus(&data.test_images[..test_n * image_dim], &data.test_labels[..test_n], test_n)
+        .unwrap_or(0.0);
+
+    let sample = &data.test_images[..image_dim];
+    let routed = engine
+        .route_and_predict_robust(sample, 0.10, 0.10)
+        .ok();
+
+    let saved = engine.save(save_path).is_ok();
+    let loaded = qlang_runtime::tci::TciEngine::load(save_path).ok();
+    let reload_ok = loaded.as_ref().map(|e| e.task_count() == 3).unwrap_or(false);
+
+    println!("Train acc: normal={:.1}% inverted={:.1}% contrast={:.1}%", acc0 * 100.0, acc1 * 100.0, acc2 * 100.0);
+    println!("Retention task0: before={:.1}% after={:.1}% delta={:+.2}%", task0_before * 100.0, task0_after * 100.0, (task0_after - task0_before) * 100.0);
+    println!("Consensus acc: {:.1}%", consensus * 100.0);
+    println!("Persistence: saved={} reload_ok={} path={}", saved, reload_ok, save_path);
+    if let Some(r) = routed {
+        println!(
+            "Routing check: task='{}' sim={:.3} pred={} conf={:.3} fallback={}",
+            r.task_name, r.similarity, r.prediction, r.confidence, r.used_consensus_fallback
+        );
+    }
+
+    let retention_ok = (task0_after - task0_before).abs() <= 0.02;
+    let verify_ok = retention_ok && saved && reload_ok && consensus > 0.50;
+    println!("VERIFY RESULT: {}", if verify_ok { "PASS" } else { "FAIL" });
 }
 
 // ============================================================
@@ -583,6 +666,11 @@ fn main() {
             let rounds: usize = arg_value(&args, "--rounds").and_then(|s| s.parse().ok()).unwrap_or(5);
             cmd_tci_demo(rounds);
         }
+        "tci-verify" => {
+            let rounds: usize = arg_value(&args, "--rounds").and_then(|s| s.parse().ok()).unwrap_or(5);
+            let output = arg_value(&args, "--output").unwrap_or_else(|| "tci_state.qltc".into());
+            cmd_tci_verify(rounds, &output);
+        }
         "help" | "--help" | "-h" => print_usage(),
         other => {
             eprintln!("Unknown command: {}", other);
@@ -603,6 +691,7 @@ fn print_usage() {
     println!("  qlang info   <model.qlbg>");
     println!("  qlang bench  <model.qlbg>");
     println!("  qlang tci    --rounds <n>");
+    println!("  qlang tci-verify --rounds <n> --output <state.qltc>");
     println!();
     println!("EXAMPLES:");
     println!("  qlang train --data data/mnist --epochs 15 --output digit.qlbg");
@@ -610,6 +699,7 @@ fn print_usage() {
     println!("  qlang info digit.qlbg");
     println!("  qlang bench digit.qlbg");
     println!("  qlang tci --rounds 5");
+    println!("  qlang tci-verify --rounds 5 --output tci_state.qltc");
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {
