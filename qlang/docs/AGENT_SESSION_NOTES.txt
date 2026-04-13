@@ -1,0 +1,55 @@
+Session Notes - 2026-04-13
+
+Purpose
+- Persist what was built/fixed for agent continuity in the next session.
+
+Environment and Build
+- Rust installed and verified.
+- LLVM 18 toolchain available; build uses:
+  LLVM_SYS_180_PREFIX=/usr/lib/llvm-18 cargo build
+
+Implemented/Fixed by agent
+1) qlang-runtime/mamba_train.rs
+- Added save_mamba_model(path, lm) for QLMB export.
+- Writes model config + all layer weights.
+- Adds VOCB section to persist tokenizer vocabulary (id2word), preventing <unk>-only reload behavior.
+
+2) qlang-runtime/spiking.rs
+- STDP training adjustments for learnability:
+  - learning rate increased (0.02 -> 0.1)
+  - feature normalization changed to min-max normalization
+  - margin-based update rule so updates happen on low-confidence predictions too
+
+3) qlang-runtime/ternary_brain.rs (already integrated state)
+- CompetitiveLayer.n_neurons is public (used by CLI infer output).
+- Hebbian update revised:
+  - lower signal threshold (0.3 -> 0.05)
+  - reward path can correct wrong-sign weights, not only 0->nonzero
+  - penalty path can zero/flip harmful contributors
+
+4) qo-server/routes/qlms_demo.rs
+- Removed one unnecessary mutable binding.
+- Added dead_code allow for bank_get helper to silence warning while keeping API utility.
+- Security hardening added:
+  - target host validation guard before outbound request (SSRF risk reduction)
+  - removed unsafe i8->u8 reinterpretation; replaced with safe conversion
+
+5) qlang-compile/matmul_jit.rs
+- Lifetime annotation made explicit in compile_matmul return type:
+  Result<CompiledMatMul<'_>, CodegenError>
+
+6) qlang/src/cli.rs
+- Removed unnecessary mutable binding in infer path.
+
+Validation Snapshot
+- cargo check for key crates completed without errors/warnings in this state.
+- Build and test commands were repeatedly validated with LLVM_SYS_180_PREFIX set.
+
+Operational Notes
+- Disk pressure was a recurring blocker; aggressive cache cleanup performed.
+- Current disk status after deep cleanup: around 14G free on root filesystem.
+
+Recommended resume point next session
+1) Continue with planned "new/large" feature work from this baseline.
+2) Keep using cargo check during rapid edits, then full cargo build.
+3) If disk pressure returns, clear caches before heavy rebuilds.

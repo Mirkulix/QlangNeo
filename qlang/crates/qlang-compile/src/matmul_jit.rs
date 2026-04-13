@@ -68,7 +68,7 @@ fn build_for<'ctx, F>(
 }
 
 /// Compile a matrix multiplication kernel via LLVM.
-pub fn compile_matmul(context: &Context) -> Result<CompiledMatMul, CodegenError> {
+pub fn compile_matmul(context: &Context) -> Result<CompiledMatMul<'_>, CodegenError> {
     let module = context.create_module("qlang_matmul");
     let builder = context.create_builder();
 

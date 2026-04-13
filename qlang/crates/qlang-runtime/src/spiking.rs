@@ -448,9 +448,8 @@ impl SpikingNetwork {
         assert!(labels.len() >= n_samples, "Not enough labels for n_samples");
         let feat_len = self.feature_dim;
 
-        // Running normalization: average spike count per feature
-        // (helps the perceptron update despite variable spike totals).
-        let lr: f32 = 0.02;
+        // Higher base learning rate — 0.02 was far too small to learn in reasonable epochs
+        let lr: f32 = 0.1;
 
         for _epoch in 0..epochs.max(1) {
             for s in 0..n_samples {
@@ -461,33 +460,43 @@ impl SpikingNetwork {
                 // 1+2) Run hidden layers, count hidden spikes.
                 let counts = self.hidden_spike_counts(sample, timesteps);
 
-                // Normalize counts to feature vector in [0,1]-ish.
-                let max_c = *counts.iter().max().unwrap_or(&1) as f32;
-                let norm = if max_c > 0.0 { max_c } else { 1.0 };
-                let feat: Vec<f32> = counts.iter().map(|&c| c as f32 / norm).collect();
+                // Normalize with min-max instead of max-only to preserve fine differences
+                let min_c = counts.iter().min().copied().unwrap_or(0) as f32;
+                let max_c = counts.iter().max().copied().unwrap_or(1) as f32;
+                let norm = (max_c - min_c).max(1.0);
+                let feat: Vec<f32> = counts.iter().map(|&c| (c as f32 - min_c) / norm).collect();
 
                 // 3) Predict with current readout.
                 let mut best = 0usize;
                 let mut best_s = f32::NEG_INFINITY;
+                let mut scores = vec![0.0f32; self.n_classes];
                 for c in 0..self.n_classes {
                     let row = c * feat_len;
                     let mut score = self.readout_bias[c];
                     for i in 0..feat_len {
                         score += self.readout_w[row + i] * feat[i];
                     }
+                    scores[c] = score;
                     if score > best_s { best_s = score; best = c; }
                 }
+                let target_s = scores[label];
 
-                // Perceptron-style update: only on misclassification.
-                if best != label {
+                // Perceptron update: on misclassification OR when margin is too small
+                let margin = 0.5;
+                if best != label || (best_s - target_s).abs() < margin {
+                    let effective_lr = lr * (1.0 + margin - (target_s - best_s).max(-margin)).max(0.1);
                     let tgt_row = label * feat_len;
                     let wrong_row = best * feat_len;
                     for i in 0..feat_len {
-                        self.readout_w[tgt_row + i] += lr * feat[i];
-                        self.readout_w[wrong_row + i] -= lr * feat[i];
+                        self.readout_w[tgt_row + i] += effective_lr * feat[i];
+                        if best != label {
+                            self.readout_w[wrong_row + i] -= effective_lr * feat[i];
+                        }
                     }
-                    self.readout_bias[label] += lr * 0.1;
-                    self.readout_bias[best] -= lr * 0.1;
+                    self.readout_bias[label] += effective_lr * 0.1;
+                    if best != label {
+                        self.readout_bias[best] -= effective_lr * 0.1;
+                    }
                 }
             }
         }

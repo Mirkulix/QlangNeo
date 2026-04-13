@@ -463,6 +463,62 @@ impl TrainableLM {
     }
 }
 
+/// Save a trained Mamba LM to a QLMB binary file including the tokenizer vocab.
+///
+/// The VOCB section ensures that token IDs match exactly when the model is
+/// reloaded — without it, generation emits `<unk>` for every token.
+pub fn save_mamba_model(path: &str, lm: &TrainableLM) -> Result<(), String> {
+    use std::io::Write;
+
+    let file = std::fs::File::create(path)
+        .map_err(|e| format!("Cannot create '{}': {}", path, e))?;
+    let mut w = std::io::BufWriter::new(file);
+
+    let write_u32 = |w: &mut std::io::BufWriter<std::fs::File>, v: u32| -> Result<(), String> {
+        w.write_all(&v.to_le_bytes()).map_err(|e| e.to_string())
+    };
+    let write_f32_vec = |w: &mut std::io::BufWriter<std::fs::File>, v: &[f32]| -> Result<(), String> {
+        w.write_all(&(v.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+        for &f in v {
+            w.write_all(&f.to_le_bytes()).map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    };
+
+    // Magic
+    w.write_all(b"QLMB").map_err(|e| e.to_string())?;
+
+    // Config
+    write_u32(&mut w, lm.d_model as u32)?;
+    write_u32(&mut w, lm.vocab_size as u32)?;
+    write_u32(&mut w, lm.layers.len() as u32)?;
+
+    // Weights
+    write_f32_vec(&mut w, &lm.embedding)?;
+    write_f32_vec(&mut w, &lm.output_head)?;
+    for layer in &lm.layers {
+        write_f32_vec(&mut w, &layer.w_x)?;
+        write_f32_vec(&mut w, &layer.w_h)?;
+        write_f32_vec(&mut w, &layer.w_gate)?;
+        write_f32_vec(&mut w, &layer.w_out)?;
+        write_f32_vec(&mut w, &layer.b_h)?;
+        write_f32_vec(&mut w, &layer.b_gate)?;
+    }
+
+    // VOCB section — critical for correct token IDs on reload
+    w.write_all(b"VOCB").map_err(|e| e.to_string())?;
+    let vocab = &lm.tokenizer.id2word;
+    write_u32(&mut w, vocab.len() as u32)?;
+    for word in vocab {
+        let bytes = word.as_bytes();
+        let len = bytes.len().min(u16::MAX as usize) as u16;
+        w.write_all(&len.to_le_bytes()).map_err(|e| e.to_string())?;
+        w.write_all(&bytes[..len as usize]).map_err(|e| e.to_string())?;
+    }
+
+    w.flush().map_err(|e| e.to_string())
+}
+
 /// Load a trained Mamba LM from a QLMB binary file.
 ///
 /// The `text_for_tokenizer` is used to rebuild the BPE tokenizer with the

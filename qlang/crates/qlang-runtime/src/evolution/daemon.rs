@@ -18,7 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 use super::fitness::{FitnessTracker, GenerationStats};
-use super::mutation::{MutationConfig, XorShift64};
+use super::mutation::XorShift64;
 
 // ---------------------------------------------------------------------------
 // Configuration + reports

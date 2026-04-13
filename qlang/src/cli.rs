@@ -290,7 +290,7 @@ fn cmd_infer(model_path: &str, input_text: &str) {
     println!("QLANG Infer — Ternary Zero-Multiply\n");
 
     // First try loading as TernaryBrain (bincode format from cmd_train)
-    if let Ok(mut brain) = qlang_runtime::ternary_brain::TernaryBrain::load(model_path) {
+    if let Ok(brain) = qlang_runtime::ternary_brain::TernaryBrain::load(model_path) {
         println!("Loaded TernaryBrain: {} neurons, {} classes",
             brain.layer.n_neurons, brain.n_classes);
 

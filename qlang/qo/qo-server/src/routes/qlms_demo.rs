@@ -98,6 +98,7 @@ fn bank_store(id: &str, brain: TernaryBrain) {
         .insert(id.to_string(), Arc::new(brain));
 }
 
+#[allow(dead_code)]
 fn bank_get(id: &str) -> Option<Arc<TernaryBrain>> {
     BRAIN_BANK.lock().unwrap().get(id).cloned()
 }
@@ -131,11 +132,9 @@ fn encode_payload(p: &ModelPayload) -> Vec<u8> {
         buf.extend_from_slice(nb);
     }
     buf.extend_from_slice(&p.timestamp_ms.to_le_bytes());
-    // weights as raw i8 bytes
-    let wbytes: &[u8] = unsafe {
-        std::slice::from_raw_parts(p.weights.as_ptr() as *const u8, p.weights.len())
-    };
-    buf.extend_from_slice(wbytes);
+    // Transmit i8 weights as u8 bytes (same bit pattern, safe reinterpretation)
+    let wbytes: Vec<u8> = p.weights.iter().map(|&b| b as u8).collect();
+    buf.extend_from_slice(&wbytes);
     buf
 }
 
@@ -298,6 +297,55 @@ fn train_demo_brain() -> (TernaryBrain, u32, u32, Vec<String>, Vec<f32>, u8) {
 // the receive side (keeping payload focused on weights).
 
 // ============================================================
+// Security: SSRF guard
+// ============================================================
+
+/// Validate that a `host[:port]` string is safe to connect to.
+///
+/// Blocks localhost, link-local, and RFC-1918 private ranges to prevent
+/// Server-Side Request Forgery (SSRF) attacks.
+fn validate_target_host(host: &str) -> Result<(), String> {
+    // Strip optional port suffix
+    let hostname = host.split(':').next().unwrap_or("").to_lowercase();
+
+    if hostname.is_empty() {
+        return Err("target_host must not be empty".into());
+    }
+
+    // Reject URL schemes / path characters
+    if host.contains('/') || host.contains('@') || host.contains('#') {
+        return Err("target_host must be host[:port] only".into());
+    }
+
+    // Reject loopback / localhost names
+    let blocked_names = ["localhost", "::1", "0.0.0.0"];
+    if blocked_names.contains(&hostname.as_str()) {
+        return Err(format!("target_host '{}' is not allowed", hostname));
+    }
+
+    // Reject IPv4 private / loopback ranges
+    if let Ok(addr) = hostname.parse::<std::net::Ipv4Addr>() {
+        if addr.is_loopback() || addr.is_private() || addr.is_link_local() || addr.is_unspecified() {
+            return Err(format!("target_host '{}' resolves to a blocked range", hostname));
+        }
+    }
+
+    // Reject IPv6 loopback
+    if let Ok(addr) = hostname.parse::<std::net::Ipv6Addr>() {
+        if addr.is_loopback() || addr.is_unspecified() {
+            return Err(format!("target_host '{}' is not allowed", hostname));
+        }
+    }
+
+    // Reject 127.x.x.x range explicitly (loopback is only 127.0.0.1 via is_loopback())
+    if hostname.starts_with("127.") || hostname.starts_with("169.254.") {
+        return Err(format!("target_host '{}' is not allowed", hostname));
+    }
+
+    Ok(())
+}
+
+// ============================================================
 // HTTP handlers
 // ============================================================
 
@@ -325,7 +373,7 @@ pub async fn send_model(
     let t0 = Instant::now();
     // Train a small demo brain on this server (server A's "specialist")
     let (brain, image_dim, n_classes, class_names, _test, _label) = train_demo_brain();
-    let total_weights = brain.total_weights();
+    let _total_weights = brain.total_weights();
     let weights_i8 = brain.dump_weights_i8();
 
     let specialist_id = input
@@ -347,6 +395,10 @@ pub async fn send_model(
     let (frame, signature) = encode_qlms(KIND_MODEL, &payload_bytes);
     let sig_hex = hex(&signature);
     let bytes = frame.len();
+
+    // SSRF guard: validate target before making any outbound request
+    validate_target_host(&input.target_host)
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     // POST to target
     let target_url = format!("http://{}/api/qlms/receive", input.target_host);
@@ -452,7 +504,7 @@ pub async fn receive_model(
         ));
     }
 
-    let mut brain = TernaryBrain::from_template_and_weights(&template, &payload.weights)
+    let brain = TernaryBrain::from_template_and_weights(&template, &payload.weights)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("load weights: {e}")))?;
     // Replace template weights with payload (from_template_and_weights already did)
     // Also validate the brain is fully ternary
