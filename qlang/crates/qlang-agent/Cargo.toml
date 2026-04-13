@@ -5,7 +5,7 @@ edition.workspace = true
 description = "QLANG agent interface - AI-to-AI graph communication"
 
 [dependencies]
-bincode = "1.3"
+bincode = "3.0"
 qlang-core = { workspace = true }
 qlang-runtime = { workspace = true }
 serde = { workspace = true }
