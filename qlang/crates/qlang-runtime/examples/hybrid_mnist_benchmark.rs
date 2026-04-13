@@ -26,12 +26,14 @@ struct BenchConfig {
     epochs: usize,
     eval_every: usize,
     use_feature_cache: bool,
+    mlp_only: bool,
 }
 
 fn parse_profile() -> BenchConfig {
     let args: Vec<String> = env::args().collect();
     let mut profile = BenchProfile::Fast;
     let mut use_feature_cache = true;
+    let mut mlp_only = false;
 
     let mut i = 1usize;
     while i < args.len() {
@@ -47,6 +49,9 @@ fn parse_profile() -> BenchConfig {
             "--no-cache" => {
                 use_feature_cache = false;
             }
+            "--mlp-only" => {
+                mlp_only = true;
+            }
             _ => {}
         }
         i += 1;
@@ -61,6 +66,7 @@ fn parse_profile() -> BenchConfig {
             epochs: 8,
             eval_every: 2,
             use_feature_cache,
+            mlp_only,
         },
         BenchProfile::Balanced => BenchConfig {
             profile,
@@ -70,6 +76,7 @@ fn parse_profile() -> BenchConfig {
             epochs: 25,
             eval_every: 5,
             use_feature_cache,
+            mlp_only,
         },
         BenchProfile::Full => BenchConfig {
             profile,
@@ -79,6 +86,7 @@ fn parse_profile() -> BenchConfig {
             epochs: 50,
             eval_every: 5,
             use_feature_cache,
+            mlp_only,
         },
     }
 }
@@ -92,8 +100,15 @@ fn main() {
     println!("╚═══════════════════════════════════════════════════════════════╝\n");
 
     // Configuration
-    let snn_layers = vec![28 * 28, 256, 128]; // MNIST 28×28 → hidden layers
-    let readout_hidden = 256;
+    let (snn_layers, readout_hidden) = if cfg.mlp_only {
+        (vec![28 * 28, 28 * 28], 128)
+    } else {
+        match cfg.profile {
+            BenchProfile::Fast => (vec![28 * 28, 28 * 28], 128),
+            BenchProfile::Balanced => (vec![28 * 28, 256, 128], 256),
+            BenchProfile::Full => (vec![28 * 28, 256, 128], 256),
+        }
+    };
     let n_classes = 10;
     let timesteps = cfg.timesteps;
     let n_train_samples = cfg.n_train_samples;
@@ -106,6 +121,7 @@ fn main() {
     println!("  SNN Layers:      {}", format_vec(&snn_layers));
     println!("  MLP Readout:     {} → {} → {}", snn_layers.last().unwrap(), readout_hidden, n_classes);
     println!("  Profile:         {:?}", cfg.profile);
+    println!("  Mode:            {}", if cfg.mlp_only { "MLP-only" } else { "Hybrid" });
     println!("  Timesteps:       {}", timesteps);
     println!("\nTraining Configuration:");
     println!("  Train Samples:   {}", n_train_samples);
@@ -144,7 +160,7 @@ fn main() {
     println!("Starting training ({} epochs)...", epochs);
     println!("────────────────────────────────────────────────────────────────");
 
-    if cfg.use_feature_cache {
+    if cfg.use_feature_cache && !cfg.mlp_only {
         println!("Note: static feature cache is disabled in hybrid mode (SNN updates every step).");
     }
 
@@ -159,9 +175,24 @@ fn main() {
         // Training pass
         for sample in 0..n_train_samples {
             let input = &train_inputs[sample * snn_layers[0]..(sample + 1) * snn_layers[0]];
-            let target = train_labels[sample];
+            let target = train_labels[sample] as usize;
 
-            let loss = classifier.train_step(input, target, lr_mlp, lr_snn);
+            let loss = if cfg.mlp_only {
+                let (logits, hidden) = classifier.readout.forward(input);
+                let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exp_logits: Vec<f32> = logits.iter().map(|l| (l - max_logit).exp()).collect();
+                let sum_exp: f32 = exp_logits.iter().sum();
+                let prob_t = (exp_logits[target] / sum_exp).max(1e-8);
+                let loss = -prob_t.ln();
+                let d_output = classifier.readout.loss_gradient(&logits, target);
+                classifier
+                    .readout
+                    .backward_and_update(input, &hidden, &d_output, lr_mlp);
+                loss
+            } else {
+                classifier.train_step(input, target as u8, lr_mlp, lr_snn)
+            };
+
             total_loss += loss;
             num_samples += 1;
         }
@@ -171,10 +202,20 @@ fn main() {
 
         // Evaluation
         if epoch % cfg.eval_every == 0 || epoch == epochs - 1 {
-            let train_acc =
-                classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0]);
-            let test_acc =
-                classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0]);
+            let train_acc = if cfg.mlp_only {
+                classifier
+                    .readout
+                    .accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
+            } else {
+                classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
+            };
+            let test_acc = if cfg.mlp_only {
+                classifier
+                    .readout
+                    .accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
+            } else {
+                classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
+            };
 
             println!(
                 " Epoch {:3} | Loss: {:6.4} | Train Acc: {:5.1}% | Test Acc: {:5.1}% | {:6.2}s",
@@ -203,10 +244,20 @@ fn main() {
     // Final Evaluation
     // =========================================================================
     println!("Final Evaluation:");
-    let final_train_acc =
-        classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0]);
-    let final_test_acc =
-        classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0]);
+    let final_train_acc = if cfg.mlp_only {
+        classifier
+            .readout
+            .accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
+    } else {
+        classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
+    };
+    let final_test_acc = if cfg.mlp_only {
+        classifier
+            .readout
+            .accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
+    } else {
+        classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
+    };
 
     println!("  Train Accuracy: {:.1}%", final_train_acc * 100.0);
     println!("  Test Accuracy:  {:.1}%", final_test_acc * 100.0);
@@ -240,17 +291,19 @@ fn generate_mnist_data(n_samples: usize, input_dim: usize) -> (Vec<f32>, Vec<u8>
 
     for sample in 0..n_samples {
         let class = (sample % 10) as u8;
+        let block = input_dim / 10;
+        let start = class as usize * block;
+        let end = ((class as usize + 1) * block).min(input_dim);
 
-        // Generate class-correlated pattern
+        // Build a separable class pattern: one class-specific block is boosted,
+        // while the rest stays low-amplitude noise.
         let input: Vec<f32> = (0..input_dim)
             .map(|i| {
-                // Base pattern: depends on class
-                let base = ((i as u8 + class * 7).wrapping_mul(13) % 17) as f32 / 17.0;
-
-                // Add some noise
-                let noise = ((i as u32 * 19 + sample as u32 * 31) % 100) as f32 / 100.0;
-
-                (base * 0.7 + noise * 0.3).clamp(0.0, 1.0)
+                let noise = ((i as u32 * 73 + sample as u32 * 131 + class as u32 * 17) % 1000)
+                    as f32
+                    / 1000.0;
+                let boost = if i >= start && i < end { 0.85 } else { 0.10 };
+                (boost + noise * 0.15).clamp(0.0, 1.0)
             })
             .collect();
 
