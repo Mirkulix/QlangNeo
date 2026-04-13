@@ -20,7 +20,7 @@ rayon = "1.10"
 redb = { workspace = true }
 bincode = "1.3"
 tokio = { workspace = true }
-wgpu = { version = "24", optional = true }
+wgpu = { version = "29", optional = true }
 pollster = { version = "0.4", optional = true }
 rustls = { version = "0.23", optional = true }
 webpki-roots = { version = "0.26", optional = true }
