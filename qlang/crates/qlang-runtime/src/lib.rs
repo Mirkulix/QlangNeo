@@ -47,6 +47,7 @@ pub mod noprop;
 pub mod organism;
 pub mod evolution;
 pub mod spiking;
+pub mod hybrid_spiking;
 pub mod ttt;
 pub mod qlang_lm;
 pub mod quantum_flow;
