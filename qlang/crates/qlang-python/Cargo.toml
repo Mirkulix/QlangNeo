@@ -11,4 +11,4 @@ crate-type = ["cdylib"]
 qlang-core = { path = "../qlang-core" }
 qlang-runtime = { path = "../qlang-runtime" }
 qlang-agent = { path = "../qlang-agent" }
-pyo3 = { version = "0.23", features = ["extension-module"] }
+pyo3 = { version = "0.28", features = ["extension-module"] }
