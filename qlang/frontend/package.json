@@ -11,7 +11,9 @@
   "dependencies": {
     "lucide-react": "^1.7.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "react-force-graph-3d": "^1.29.1",
+    "three": "^0.183.2"
   },
   "devDependencies": {
     "@types/react": "^19.0.0",

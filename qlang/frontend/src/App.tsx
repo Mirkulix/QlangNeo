@@ -31,8 +31,9 @@ import SpikingView from './SpikingView'
 import OrganismView from './OrganismView'
 import ActivityFeed from './ActivityFeed'
 import NeoAgents from './neo/NeoAgents'
+import KnowledgeGraph3DView from './KnowledgeGraph3DView'
 
-type Tab = 'neo' | 'chat' | 'goals' | 'agents' | 'consciousness' | 'provider' | 'evolution' | 'strategy' | 'graphs' | 'messages' | 'training' | 'gpu-training' | 'spiking' | 'organism' | 'historie' | 'neo-agents'
+type Tab = 'neo' | 'chat' | 'goals' | 'agents' | 'consciousness' | 'provider' | 'evolution' | 'strategy' | 'graphs' | 'knowledge-3d' | 'messages' | 'training' | 'gpu-training' | 'spiking' | 'organism' | 'historie' | 'neo-agents'
 
 const tabs: { id: Tab; label: string; icon: typeof MessageSquare }[] = [
   { id: 'neo', label: 'Neo', icon: Sparkles },
@@ -44,6 +45,7 @@ const tabs: { id: Tab; label: string; icon: typeof MessageSquare }[] = [
   { id: 'evolution', label: 'Evolution', icon: Dna },
   { id: 'strategy', label: 'Strategie', icon: GitBranch },
   { id: 'graphs', label: 'QLANG', icon: GitBranch },
+  { id: 'knowledge-3d', label: 'Knowledge 3D', icon: Brain },
   { id: 'messages', label: 'Messages', icon: Mail },
   { id: 'training', label: 'Training', icon: Dna },
   { id: 'gpu-training', label: 'GPU Training', icon: Zap },
@@ -64,6 +66,7 @@ function renderView(tab: Tab, onNavigate: (tab: string) => void) {
     case 'evolution': return <EvolutionView />
     case 'strategy': return <EvolutionStrategyView />
     case 'graphs': return <GraphsView />
+    case 'knowledge-3d': return <KnowledgeGraph3DView />
     case 'messages': return <MessagesView />
     case 'training': return <TrainingView />
     case 'gpu-training': return <GpuTrainingView />
