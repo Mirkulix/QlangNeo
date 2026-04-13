@@ -291,8 +291,9 @@ fn cmd_infer(model_path: &str, input_text: &str) {
 
     // First try loading as TernaryBrain (bincode format from cmd_train)
     if let Ok(brain) = qlang_runtime::ternary_brain::TernaryBrain::load(model_path) {
+        let neurons = brain.total_weights() / brain.image_dim.max(1);
         println!("Loaded TernaryBrain: {} neurons, {} classes",
-            brain.layer.n_neurons, brain.n_classes);
+            neurons, brain.n_classes);
 
         let data = MnistData::synthetic(100, 100);
 
@@ -455,6 +456,95 @@ fn cmd_bench(model_path: &str) {
     println!("File size: {} bytes", std::fs::metadata(model_path).map(|m| m.len()).unwrap_or(0));
 }
 
+fn cmd_tci_demo(rounds: usize) {
+    use qlang_runtime::tci::TciEngine;
+    use qlang_runtime::ternary_brain::TernaryBrain;
+
+    println!("QLANG TCI Demo — Ternary Continual Intelligence\n");
+
+    let image_dim = 784usize;
+    let data = MnistData::synthetic(2500, 400);
+
+    let template = TernaryBrain::init(
+        &data.train_images,
+        &data.train_labels,
+        image_dim,
+        1200,
+        10,
+        12,
+    );
+    let mut engine = TciEngine::new(template);
+
+    let n_a = 1000usize;
+    let acc_a = engine
+        .learn_task(
+            "digits-normal",
+            &data.train_images[..n_a * image_dim],
+            &data.train_labels[..n_a],
+            n_a,
+            rounds,
+        )
+        .unwrap_or(0.0);
+
+    let n_b = 1000usize;
+    let mut inv_images = data.train_images[..n_b * image_dim].to_vec();
+    for v in &mut inv_images {
+        *v = 1.0 - *v;
+    }
+    let acc_b = engine
+        .learn_task(
+            "digits-inverted",
+            &inv_images,
+            &data.train_labels[..n_b],
+            n_b,
+            rounds,
+        )
+        .unwrap_or(0.0);
+
+    let test_n = data.n_test.min(300);
+    let consensus_acc = engine
+        .evaluate_consensus(&data.test_images[..test_n * image_dim], &data.test_labels[..test_n], test_n)
+        .unwrap_or(0.0);
+    let task0_acc = engine
+        .evaluate_task(0, &data.test_images[..test_n * image_dim], &data.test_labels[..test_n], test_n)
+        .unwrap_or(0.0);
+    let task1_acc = engine
+        .evaluate_task(1, &data.test_images[..test_n * image_dim], &data.test_labels[..test_n], test_n)
+        .unwrap_or(0.0);
+
+    let sample_normal = &data.test_images[..image_dim];
+    let routed_normal = engine.route_and_predict(sample_normal).ok();
+
+    let mut sample_inverted = sample_normal.to_vec();
+    for v in &mut sample_inverted {
+        *v = 1.0 - *v;
+    }
+    let routed_inverted = engine.route_and_predict(&sample_inverted).ok();
+
+    println!("Learned tasks: {}", engine.task_count());
+    println!("Task names: {}", engine.task_names().join(", "));
+    println!("Task train acc: normal={:.1}% inverted={:.1}%", acc_a * 100.0, acc_b * 100.0);
+    println!(
+        "Retention (test): task0={:.1}% task1={:.1}% consensus={:.1}%",
+        task0_acc * 100.0,
+        task1_acc * 100.0,
+        consensus_acc * 100.0
+    );
+
+    if let Some(r) = routed_normal {
+        println!(
+            "Route normal sample -> task='{}' sim={:.3} pred={} conf={:.3}",
+            r.task_name, r.similarity, r.prediction, r.confidence
+        );
+    }
+    if let Some(r) = routed_inverted {
+        println!(
+            "Route inverted sample -> task='{}' sim={:.3} pred={} conf={:.3}",
+            r.task_name, r.similarity, r.prediction, r.confidence
+        );
+    }
+}
+
 // ============================================================
 // Main
 // ============================================================
@@ -489,6 +579,10 @@ fn main() {
             let path = args.get(2).map(|s| s.as_str()).unwrap_or("model.qlbg");
             cmd_bench(path);
         }
+        "tci" => {
+            let rounds: usize = arg_value(&args, "--rounds").and_then(|s| s.parse().ok()).unwrap_or(5);
+            cmd_tci_demo(rounds);
+        }
         "help" | "--help" | "-h" => print_usage(),
         other => {
             eprintln!("Unknown command: {}", other);
@@ -508,12 +602,14 @@ fn print_usage() {
     println!("  qlang infer  --model <model.qlbg> --input <digit|path>");
     println!("  qlang info   <model.qlbg>");
     println!("  qlang bench  <model.qlbg>");
+    println!("  qlang tci    --rounds <n>");
     println!();
     println!("EXAMPLES:");
     println!("  qlang train --data data/mnist --epochs 15 --output digit.qlbg");
     println!("  qlang infer --model digit.qlbg --input 7");
     println!("  qlang info digit.qlbg");
     println!("  qlang bench digit.qlbg");
+    println!("  qlang tci --rounds 5");
 }
 
 fn arg_value(args: &[String], flag: &str) -> Option<String> {

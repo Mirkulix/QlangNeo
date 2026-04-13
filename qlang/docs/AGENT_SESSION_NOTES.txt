@@ -53,3 +53,20 @@ Recommended resume point next session
 1) Continue with planned "new/large" feature work from this baseline.
 2) Keep using cargo check during rapid edits, then full cargo build.
 3) If disk pressure returns, clear caches before heavy rebuilds.
+
+New Large Feature (implemented now): TCI
+- Added qlang-runtime/tci.rs: TCI (Ternary Continual Intelligence).
+- Core capabilities:
+  - sequential task learning via task snapshots
+  - consensus merge over ternary weights (majority vote memory)
+  - task routing using HDC prototypes + similarity
+  - per-task and consensus evaluation APIs
+- Added runtime export in qlang-runtime/src/lib.rs:
+  - pub mod tci;
+- Added CLI command in qlang/src/cli.rs:
+  - qlang tci --rounds <n>
+  - Runs two sequential tasks (normal and inverted) and prints routing/retention metrics.
+- Verified by running:
+  - cargo check -p qlang-runtime -p qlang
+  - cargo run --bin qlang -- tci --rounds 3
+  - Demo output confirmed task learning, routing, and consensus evaluation.

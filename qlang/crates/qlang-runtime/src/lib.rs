@@ -50,6 +50,7 @@ pub mod spiking;
 pub mod ttt;
 pub mod qlang_lm;
 pub mod quantum_flow;
+pub mod tci;
 pub mod ternary_net;
 pub mod ternary_ops;
 pub mod ternary_brain;
