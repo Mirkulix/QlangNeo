@@ -7,9 +7,85 @@
 //! Run: `cargo run --release --example hybrid_mnist_benchmark --manifest-path crates/qlang-runtime/Cargo.toml`
 
 use qlang_runtime::hybrid_spiking::HybridSpikingClassifier;
+use std::env;
 use std::time::Instant;
 
+#[derive(Clone, Copy, Debug)]
+enum BenchProfile {
+    Fast,
+    Balanced,
+    Full,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BenchConfig {
+    profile: BenchProfile,
+    timesteps: usize,
+    n_train_samples: usize,
+    n_test_samples: usize,
+    epochs: usize,
+    eval_every: usize,
+    use_feature_cache: bool,
+}
+
+fn parse_profile() -> BenchConfig {
+    let args: Vec<String> = env::args().collect();
+    let mut profile = BenchProfile::Fast;
+    let mut use_feature_cache = true;
+
+    let mut i = 1usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--profile" if i + 1 < args.len() => {
+                profile = match args[i + 1].as_str() {
+                    "full" => BenchProfile::Full,
+                    "balanced" => BenchProfile::Balanced,
+                    _ => BenchProfile::Fast,
+                };
+                i += 1;
+            }
+            "--no-cache" => {
+                use_feature_cache = false;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    match profile {
+        BenchProfile::Fast => BenchConfig {
+            profile,
+            timesteps: 15,
+            n_train_samples: 240,
+            n_test_samples: 80,
+            epochs: 12,
+            eval_every: 2,
+            use_feature_cache,
+        },
+        BenchProfile::Balanced => BenchConfig {
+            profile,
+            timesteps: 40,
+            n_train_samples: 600,
+            n_test_samples: 120,
+            epochs: 25,
+            eval_every: 5,
+            use_feature_cache,
+        },
+        BenchProfile::Full => BenchConfig {
+            profile,
+            timesteps: 100,
+            n_train_samples: 1000,
+            n_test_samples: 200,
+            epochs: 50,
+            eval_every: 5,
+            use_feature_cache,
+        },
+    }
+}
+
 fn main() {
+    let cfg = parse_profile();
+
     println!("╔═══════════════════════════════════════════════════════════════╗");
     println!("║     Hybrid Spiking Neural Network + MLP MNIST Benchmark     ║");
     println!("║                    Target: >=90% Accuracy                     ║");
@@ -19,23 +95,26 @@ fn main() {
     let snn_layers = vec![28 * 28, 256, 128]; // MNIST 28×28 → hidden layers
     let readout_hidden = 256;
     let n_classes = 10;
-    let timesteps = 100;
-    let n_train_samples = 1000; // 1000 synthetic samples (real MNIST = 60k)
-    let n_test_samples = 200; // 200 test samples
-    let epochs = 50;
+    let timesteps = cfg.timesteps;
+    let n_train_samples = cfg.n_train_samples;
+    let n_test_samples = cfg.n_test_samples;
+    let epochs = cfg.epochs;
     let lr_mlp = 0.05;
     let lr_snn = 0.001;
 
     println!("Architecture:");
     println!("  SNN Layers:      {}", format_vec(&snn_layers));
     println!("  MLP Readout:     {} → {} → {}", snn_layers.last().unwrap(), readout_hidden, n_classes);
+    println!("  Profile:         {:?}", cfg.profile);
     println!("  Timesteps:       {}", timesteps);
     println!("\nTraining Configuration:");
     println!("  Train Samples:   {}", n_train_samples);
     println!("  Test Samples:    {}", n_test_samples);
     println!("  Epochs:          {}", epochs);
+    println!("  Eval Every:      {}", cfg.eval_every);
     println!("  LR (MLP):        {}", lr_mlp);
     println!("  LR (SNN):        {}", lr_snn);
+    println!("  Feature Cache:   {}", if cfg.use_feature_cache { "ON" } else { "OFF" });
     println!();
 
     // =========================================================================
@@ -65,6 +144,30 @@ fn main() {
     println!("Starting training ({} epochs)...", epochs);
     println!("────────────────────────────────────────────────────────────────");
 
+    let spike_dim = *snn_layers.last().unwrap();
+    let maybe_train_cache = if cfg.use_feature_cache {
+        println!("Precomputing train spike features...");
+        Some(extract_spike_features(
+            &mut classifier,
+            &train_inputs,
+            n_train_samples,
+            snn_layers[0],
+        ))
+    } else {
+        None
+    };
+    let maybe_test_cache = if cfg.use_feature_cache {
+        println!("Precomputing test spike features...");
+        Some(extract_spike_features(
+            &mut classifier,
+            &test_inputs,
+            n_test_samples,
+            snn_layers[0],
+        ))
+    } else {
+        None
+    };
+
     let train_start = Instant::now();
     let mut epoch_stats = Vec::new();
 
@@ -74,24 +177,54 @@ fn main() {
         let mut num_samples = 0usize;
 
         // Training pass
-        for sample in 0..n_train_samples {
-            let input = &train_inputs[sample * snn_layers[0]..(sample + 1) * snn_layers[0]];
-            let target = train_labels[sample];
+        if let Some(train_cache) = &maybe_train_cache {
+            for sample in 0..n_train_samples {
+                let spikes = &train_cache[sample * spike_dim..(sample + 1) * spike_dim];
+                let target = train_labels[sample] as usize;
 
-            let loss = classifier.train_step(input, target, lr_mlp, lr_snn);
-            total_loss += loss;
-            num_samples += 1;
+                let (logits, hidden) = classifier.readout.forward(spikes);
+                let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+                let exp_logits: Vec<f32> = logits.iter().map(|l| (l - max_logit).exp()).collect();
+                let sum_exp: f32 = exp_logits.iter().sum();
+                let prob_t = (exp_logits[target] / sum_exp).max(1e-8);
+                let loss = -prob_t.ln();
+                let d_output = classifier.readout.loss_gradient(&logits, target);
+                classifier
+                    .readout
+                    .backward_and_update(spikes, &hidden, &d_output, lr_mlp);
+                total_loss += loss;
+                num_samples += 1;
+            }
+        } else {
+            for sample in 0..n_train_samples {
+                let input = &train_inputs[sample * snn_layers[0]..(sample + 1) * snn_layers[0]];
+                let target = train_labels[sample];
+
+                let loss = classifier.train_step(input, target, lr_mlp, lr_snn);
+                total_loss += loss;
+                num_samples += 1;
+            }
         }
 
         let avg_loss = total_loss / num_samples as f32;
         let epoch_elapsed = epoch_start.elapsed().as_secs_f64();
 
-        // Evaluation (every 5 epochs)
-        if epoch % 5 == 0 || epoch == epochs - 1 {
-            let train_acc =
-                classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0]);
-            let test_acc =
-                classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0]);
+        // Evaluation
+        if epoch % cfg.eval_every == 0 || epoch == epochs - 1 {
+            let train_acc = if let Some(train_cache) = &maybe_train_cache {
+                classifier
+                    .readout
+                    .accuracy(train_cache, &train_labels, n_train_samples, spike_dim)
+            } else {
+                classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
+            };
+            let test_acc = if let Some(test_cache) = &maybe_test_cache {
+                classifier
+                    .readout
+                    .accuracy(test_cache, &test_labels, n_test_samples, spike_dim)
+            } else {
+                classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
+            };
 
             println!(
                 " Epoch {:3} | Loss: {:6.4} | Train Acc: {:5.1}% | Test Acc: {:5.1}% | {:6.2}s",
@@ -120,10 +253,20 @@ fn main() {
     // Final Evaluation
     // =========================================================================
     println!("Final Evaluation:");
-    let final_train_acc =
-        classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0]);
-    let final_test_acc =
-        classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0]);
+    let final_train_acc = if let Some(train_cache) = &maybe_train_cache {
+        classifier
+            .readout
+            .accuracy(train_cache, &train_labels, n_train_samples, spike_dim)
+    } else {
+        classifier.accuracy(&train_inputs, &train_labels, n_train_samples, snn_layers[0])
+    };
+    let final_test_acc = if let Some(test_cache) = &maybe_test_cache {
+        classifier
+            .readout
+            .accuracy(test_cache, &test_labels, n_test_samples, spike_dim)
+    } else {
+        classifier.accuracy(&test_inputs, &test_labels, n_test_samples, snn_layers[0])
+    };
 
     println!("  Train Accuracy: {:.1}%", final_train_acc * 100.0);
     println!("  Test Accuracy:  {:.1}%", final_test_acc * 100.0);
@@ -183,4 +326,26 @@ fn format_vec(v: &[usize]) -> String {
         .map(|x| x.to_string())
         .collect::<Vec<_>>()
         .join(" → ")
+}
+
+fn extract_spike_features(
+    classifier: &mut HybridSpikingClassifier,
+    inputs: &[f32],
+    n_samples: usize,
+    input_dim: usize,
+) -> Vec<f32> {
+    let spike_dim = classifier.readout.n_input;
+    let mut out = Vec::with_capacity(n_samples * spike_dim);
+
+    for s in 0..n_samples {
+        let sample = &inputs[s * input_dim..(s + 1) * input_dim];
+        let spike_counts = classifier.snn.run(sample, classifier.timesteps);
+        out.extend(
+            spike_counts
+                .iter()
+                .map(|&c| (c as f32) / (classifier.timesteps as f32).max(1.0)),
+        );
+    }
+
+    out
 }

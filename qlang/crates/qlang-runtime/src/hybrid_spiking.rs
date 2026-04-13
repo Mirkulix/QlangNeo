@@ -85,7 +85,6 @@ impl MLPReadout {
 
     /// Cross-entropy loss gradient
     pub fn loss_gradient(&self, logits: &[f32], target: usize) -> Vec<f32> {
-        let oc = self.n_classes;
         // Softmax
         let max_logit = logits.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
         let exp_logits: Vec<f32> = logits.iter().map(|l| (l - max_logit).exp()).collect();
