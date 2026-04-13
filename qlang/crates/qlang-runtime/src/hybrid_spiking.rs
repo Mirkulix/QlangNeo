@@ -8,7 +8,7 @@
 //!
 //! This achieves >90% MNIST by using neuromorphic features + gradient-based learning.
 
-use crate::spiking::{SpikingNetwork, LIFNeuron};
+use crate::spiking::SpikingNetwork;
 
 /// Trainable MLP readout on top of SNN spike counts
 #[derive(Clone, Debug)]
@@ -246,7 +246,7 @@ impl HybridSpikingClassifier {
         input: &[f32],
         target: u8,
         lr_mlp: f32,
-        lr_snn: f32,
+        _lr_snn: f32,
     ) -> f32 {
         // Forward
         let spike_counts = self.snn.run(input, self.timesteps);

@@ -153,7 +153,7 @@ impl TciEvolutionDaemon {
             engine.template.clone()
         };
 
-        let mut rng = super::mutation::XorShift64::new(cfg.seed);
+        let _rng = super::mutation::XorShift64::new(cfg.seed);
         let mut specialists = Vec::new();
         for i in 0..cfg.pool_size_per_task {
             let id = format!("{}-spec-{:06x}", task_name, i);
@@ -255,8 +255,7 @@ impl TciEvolutionDaemon {
         mutation_config.seed = cfg.seed ^ pool.generation as u64;
 
         let top_performers: Vec<usize> = (0..pool.specialists.len()).collect();
-        for mut parent_idx_iter in std::iter::repeat(()).take(cfg.mutations_per_gen) {
-            parent_idx_iter = ();
+        for _ in std::iter::repeat(()).take(cfg.mutations_per_gen) {
             let parent_idx = if !top_performers.is_empty() {
                 top_performers[cfg.seed as usize % top_performers.len()]
             } else {

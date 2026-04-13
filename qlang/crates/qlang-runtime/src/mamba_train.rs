@@ -622,7 +622,7 @@ mod tests {
     fn trainable_mamba_bptt() {
         let layer = TrainableMamba::new(16, 32, 0.37);
         let input = vec![0.1f32; 4 * 16]; // 4 timesteps
-        let (output, hidden) = layer.forward(&input, 4);
+        let (output, _hidden) = layer.forward(&input, 4);
         assert_eq!(output.len(), 64);
         assert!(output.iter().all(|x| x.is_finite()));
         println!("TrainableMamba: {} params, output finite", layer.param_count());
