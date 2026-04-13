@@ -33,7 +33,7 @@ use rayon::prelude::*;
 // ============================================================
 
 /// A single competitive ternary neuron.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct TernaryNeuron {
     /// Ternary weights {-1, 0, +1} as i8
     weights: Vec<i8>,
@@ -93,6 +93,7 @@ impl TernaryNeuron {
 // ============================================================
 
 /// A layer of competing ternary neurons (Winner-Take-All).
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct CompetitiveLayer {
     neurons: Vec<TernaryNeuron>,
     in_dim: usize,
@@ -285,6 +286,7 @@ impl CompetitiveLayer {
 // Full Ternary Brain Network
 // ============================================================
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub struct TernaryBrain {
     pub layer: CompetitiveLayer,
     pub n_classes: usize,
@@ -367,6 +369,19 @@ impl TernaryBrain {
         self.layer.neurons.iter().all(|n| {
             n.weights.iter().all(|&w| w == -1 || w == 0 || w == 1)
         })
+    }
+
+    /// Save brain to file (binary bincode format).
+    pub fn save(&self, path: &str) -> Result<(), String> {
+        let bytes = bincode::serialize(self).map_err(|e| format!("serialize: {e}"))?;
+        std::fs::write(path, &bytes).map_err(|e| format!("write: {e}"))?;
+        Ok(())
+    }
+
+    /// Load brain from file.
+    pub fn load(path: &str) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("read: {e}"))?;
+        bincode::deserialize(&bytes).map_err(|e| format!("deserialize: {e}"))
     }
 
     /// Dump all neuron ternary weights as a flat i8 vector (for mutation / storage).

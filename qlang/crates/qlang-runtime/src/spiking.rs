@@ -345,37 +345,38 @@ impl SpikingNetwork {
         }).collect()
     }
 
-    /// Collect rate-coded input spike counts for one sample over `timesteps`.
+    /// Collect hidden-layer spike counts for one sample over `timesteps`.
     ///
-    /// We simultaneously step the hidden spiking layers (so STDP and LIF
-    /// dynamics run as advertised) but use the rate-coded input spikes
-    /// themselves as the feature vector for the supervised readout.
-    /// This keeps the feature space aligned with the pixel structure and
-    /// gives the perceptron a discriminative input.
+    /// Features come from the FINAL hidden spiking layer (not input spikes).
+    /// When a readout is trained, the hidden layer spikes are classified via
+    /// the learned readout weights. When no readout exists, we fall back
+    /// to rate-coding the final layer's spike counts.
     fn hidden_spike_counts(&mut self, input: &[f32], timesteps: usize) -> Vec<u32> {
         let dt = 1.0f32;
-        let feat_len = self.feature_dim; // = input_dim
-        let mut counts = vec![0u32; feat_len];
-        let n_hidden_layers = self.layers.len().saturating_sub(1); // all but final
+        let feat_len = self.feature_dim;
+        let n_hidden_layers = self.layers.len().saturating_sub(1);
+
+        if n_hidden_layers == 0 {
+            return vec![0u32; feat_len];
+        }
+
+        let mut hidden_counts = vec![0u32; feat_len];
 
         for t in 0..timesteps {
             let time = t as f32;
             let input_spikes = Self::encode_rate_with(input, &mut self.rng, self.max_rate_hz);
 
-            // Count input spikes as our feature signal.
-            for (i, &s) in input_spikes.iter().enumerate() {
-                if s && i < feat_len { counts[i] += 1; }
-            }
-
-            // Still drive the hidden spiking layers (STDP runs inside them).
-            if n_hidden_layers > 0 {
-                let mut spikes = input_spikes;
-                for layer in self.layers.iter_mut().take(n_hidden_layers) {
-                    spikes = layer.step(&spikes, time, dt);
+            let mut spikes = input_spikes;
+            for (li, layer) in self.layers.iter_mut().enumerate() {
+                spikes = layer.step(&spikes, time, dt);
+                if li == n_hidden_layers - 1 {
+                    for (i, &s) in spikes.iter().enumerate() {
+                        if s && i < feat_len { hidden_counts[i] += 1; }
+                    }
                 }
             }
         }
-        counts
+        hidden_counts
     }
 
     /// Run the network for `timesteps` on an input.

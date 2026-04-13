@@ -269,19 +269,61 @@ fn cmd_train(data_path: &str, epochs: usize, output: &str, _hidden_layers: &[usi
     file_data.extend_from_slice(&[0x51, 0x4C, 0x54, 0x42]); // "QLTB" = QLANG Ternary Brain
     file_data.extend_from_slice(&(meta_json.len() as u32).to_le_bytes());
     file_data.extend_from_slice(&meta_json);
-    // TODO: save actual weights for inference
 
-    match std::fs::write(output, &file_data) {
+    // Save TernaryBrain weights using the brain's built-in serialization
+    match brain.save(output) {
         Ok(()) => {
-            println!("\nSaved: {} ({} bytes)", output, file_data.len());
+            println!("\nSaved TernaryBrain: {} ({} bytes)", output, tern_size);
         }
-        Err(e) => eprintln!("Save failed: {e}"),
+        Err(e) => {
+            eprintln!("Failed to save brain weights: {e}, falling back to metadata-only");
+            // Fallback: just save metadata
+            match std::fs::write(output, &file_data) {
+                Ok(()) => println!("\nSaved (metadata only): {}", output),
+                Err(e) => eprintln!("Save failed: {e}"),
+            }
+        }
     }
 }
 
 fn cmd_infer(model_path: &str, input_text: &str) {
     println!("QLANG Infer — Ternary Zero-Multiply\n");
 
+    // First try loading as TernaryBrain (bincode format from cmd_train)
+    if let Ok(mut brain) = qlang_runtime::ternary_brain::TernaryBrain::load(model_path) {
+        println!("Loaded TernaryBrain: {} neurons, {} classes",
+            brain.layer.n_neurons, brain.n_classes);
+
+        let data = MnistData::synthetic(100, 100);
+
+        // Single sample inference
+        if let Ok(digit) = input_text.parse::<u8>() {
+            if digit < 10 {
+                println!("\nTesting with synthetic digit {}...", digit);
+                for i in 0..data.n_test {
+                    if data.test_labels[i] == digit {
+                        let image = &data.test_images[i * 784..(i + 1) * 784];
+                        let start = Instant::now();
+                        let preds = brain.predict(image, 1);
+                        let infer_time = start.elapsed();
+                        println!("Predicted: {} (expected: {}) in {:?}", preds[0], digit, infer_time);
+                        return;
+                    }
+                }
+            }
+        }
+
+        // Batch inference
+        println!("\nRunning batch inference on synthetic test data...");
+        let start = Instant::now();
+        let acc = brain.accuracy(&data.test_images, &data.test_labels, data.n_test.min(500));
+        let infer_time = start.elapsed();
+        println!("Accuracy: {:.1}% on {} samples", acc * 100.0, data.n_test.min(500));
+        println!("Time: {:?}", infer_time);
+        return;
+    }
+
+    // Fall back to TernaryModel (FFNetwork-based)
     let model = match TernaryModel::load(model_path) {
         Ok(m) => m,
         Err(e) => { eprintln!("Load failed: {e}"); return; }
