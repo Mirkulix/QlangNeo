@@ -20,7 +20,7 @@
         "@theia/search-in-workspace": "1.70.0",
         "@theia/outline-view": "1.70.0",
         "@theia/output": "1.70.0",
-        "@theia/mini-browser": "1.70.0"
+        "@theia/mini-browser": "1.70.2"
     },
     "devDependencies": {
         "@theia/cli": "1.70.0"
