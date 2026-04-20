@@ -11,7 +11,7 @@ qlang-agent = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-inkwell = { version = "0.5", features = ["llvm18-0"], optional = true }
+inkwell = { version = "0.9", features = ["llvm18-0"], optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
