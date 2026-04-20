@@ -19,7 +19,7 @@
         "@theia/plugin-ext-vscode": "1.70.0",
         "@theia/search-in-workspace": "1.70.0",
         "@theia/outline-view": "1.70.0",
-        "@theia/output": "1.70.0",
+        "@theia/output": "1.70.2",
         "@theia/mini-browser": "1.70.0"
     },
     "devDependencies": {
