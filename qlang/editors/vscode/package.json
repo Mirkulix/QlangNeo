@@ -82,6 +82,6 @@
   "dependencies": {
     "@types/vscode": "^1.110.0",
     "typescript": "^6.0.2",
-    "vscode-languageclient": "^9.0.1"
+    "vscode-languageclient": "^10.0.0"
   }
 }
